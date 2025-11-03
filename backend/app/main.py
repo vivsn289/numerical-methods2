@@ -24,6 +24,21 @@ from app.polynomial import (
     newton_raphson_root
 )
 
+from app.gaussian_quadrature import (
+    compute_gauss_legendre_golub_welsch,
+    lagrange_weights,
+    orthogonal_collocation_matrices,
+    compute_up_to_n,
+    test_quadrature
+)
+from app.heat_equation import (
+    solve_heat_equation_collocation,
+    analytical_solution,
+    plot_comparison_data,
+    solve_multiple_times,
+    convergence_study
+)
+
 app = FastAPI(
     title="Numerical Methods API",
     description="Harshad numbers and polynomial root-finding",
@@ -71,6 +86,27 @@ class NewtonRootsRequest(BaseModel):
     precision: int = Field(default=64)
     normalized: bool = Field(default=False)
     initial_guesses: Optional[List[float]] = None
+
+class GaussQuadratureRequest(BaseModel):
+    n: int = Field(..., ge=1, le=64)
+    compute_lagrange: bool = Field(default=True)
+
+
+class CollocationMatricesRequest(BaseModel):
+    n: int = Field(..., ge=2, le=64)
+
+
+class HeatEquationRequest(BaseModel):
+    n: int = Field(default=32, ge=4, le=64)
+    t_final: float = Field(default=0.1, ge=0.0, le=10.0)
+    num_time_points: int = Field(default=50, ge=2, le=200)
+    T0: float = Field(default=0.0)
+    Ts: float = Field(default=1.0)
+
+
+class ConvergenceStudyRequest(BaseModel):
+    n_values: List[int] = Field(default=[8, 16, 32])
+    t_final: float = Field(default=0.1)
 
 
 # ============= Harshad Endpoints =============
@@ -288,3 +324,285 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+@app.post("/gaussian/compute")
+async def compute_gaussian_quadrature(request: GaussQuadratureRequest):
+    """
+    Compute Gauss-Legendre nodes and weights using Golub-Welsch algorithm.
+    Optionally compute weights using Lagrangian interpolation.
+    """
+    try:
+        start_time = time.time()
+        
+        # Compute using Golub-Welsch
+        result = compute_gauss_legendre_golub_welsch(request.n)
+        
+        # Compute using Lagrange if requested
+        if request.compute_lagrange:
+            nodes_array = np.array(result["nodes"])
+            lagrange_w = lagrange_weights(nodes_array)
+            result["weights_lagrange"] = lagrange_w.tolist()
+            
+            # Compare both methods
+            weights_gw = np.array(result["weights"])
+            diff = np.abs(weights_gw - lagrange_w)
+            result["comparison"] = {
+                "max_difference": float(np.max(diff)),
+                "rms_difference": float(np.sqrt(np.mean(diff**2)))
+            }
+        
+        elapsed = time.time() - start_time
+        
+        return {
+            "success": True,
+            "n": request.n,
+            "nodes": result["nodes"],
+            "weights": result["weights"],
+            "weights_lagrange": result.get("weights_lagrange"),
+            "comparison": result.get("comparison"),
+            "sum_weights": sum(result["weights"]),
+            "elapsed_seconds": round(elapsed, 4)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/gaussian/compute_range")
+async def compute_gaussian_range(max_n: int = 64):
+    """
+    Compute Gauss-Legendre quadrature for n=1 to max_n.
+    """
+    try:
+        start_time = time.time()
+        
+        result = compute_up_to_n(max_n)
+        elapsed = time.time() - start_time
+        
+        return {
+            "success": True,
+            "max_n": max_n,
+            "results": result["results"],
+            "elapsed_seconds": round(elapsed, 4)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/gaussian/collocation_matrices")
+async def compute_collocation_matrices(request: CollocationMatricesRequest):
+    """
+    Compute A and B matrices for orthogonal collocation at n points.
+    """
+    try:
+        start_time = time.time()
+        
+        # First compute nodes and weights
+        quad_result = compute_gauss_legendre_golub_welsch(request.n)
+        nodes = np.array(quad_result["nodes"])
+        weights = np.array(quad_result["weights"])
+        
+        # Compute collocation matrices
+        result = orthogonal_collocation_matrices(nodes, weights)
+        
+        elapsed = time.time() - start_time
+        
+        return {
+            "success": True,
+            "n": request.n,
+            "A_matrix": result["A_matrix"],
+            "B_matrix": result["B_matrix"],
+            "A_shape": result["A_shape"],
+            "B_shape": result["B_shape"],
+            "A_norm": result["A_norm"],
+            "B_norm": result["B_norm"],
+            "nodes": quad_result["nodes"],
+            "weights": quad_result["weights"],
+            "elapsed_seconds": round(elapsed, 4)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/gaussian/test_quadrature")
+async def test_gauss_quadrature(n: int = 32):
+    """
+    Test Gauss-Legendre quadrature accuracy on known integrals.
+    """
+    try:
+        start_time = time.time()
+        
+        # Compute quadrature
+        result = compute_gauss_legendre_golub_welsch(n)
+        nodes = result["nodes"]
+        weights = result["weights"]
+        
+        # Test on x^2 (exact for sufficient n)
+        test_result = test_quadrature(nodes, weights)
+        
+        elapsed = time.time() - start_time
+        
+        return {
+            "success": True,
+            "n": n,
+            "test_function": "x^2",
+            "exact_value": test_result["exact"],
+            "approximate_value": test_result["approximate"],
+            "absolute_error": test_result["absolute_error"],
+            "relative_error": test_result["relative_error"],
+            "elapsed_seconds": round(elapsed, 4)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+@app.post("/heat_equation/solve")
+async def solve_heat_eq(request: HeatEquationRequest):
+    """
+    Solve the 1D heat equation using Gauss-Legendre collocation method.
+    Compare with analytical solution.
+    """
+    try:
+        start_time = time.time()
+        
+        # Compute nodes and matrices
+        quad_result = compute_gauss_legendre_golub_welsch(request.n)
+        nodes = np.array(quad_result["nodes"])
+        weights = np.array(quad_result["weights"])
+        
+        colloc_matrices = orthogonal_collocation_matrices(nodes, weights)
+        B_matrix = np.array(colloc_matrices["B_matrix"])
+        
+        # Solve heat equation
+        t_eval = np.linspace(0, request.t_final, request.num_time_points)
+        result = solve_heat_equation_collocation(
+            request.n, nodes, B_matrix,
+            t_span=(0, request.t_final),
+            t_eval=t_eval,
+            T0=request.T0,
+            Ts=request.Ts
+        )
+        
+        elapsed = time.time() - start_time
+        
+        if result["success"]:
+            return {
+                "success": True,
+                "n": request.n,
+                "nodes": result["nodes"],
+                "t_eval": result["t_eval"],
+                "solution": result["solution"],
+                "final_solution": {
+                    "numerical": result["theta_numerical"],
+                    "analytical": result["theta_analytical"],
+                    "error": result["error"]
+                },
+                "max_error": result["max_error"],
+                "rms_error": result["rms_error"],
+                "elapsed_seconds": round(elapsed, 4)
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result.get("error", "Unknown error"))
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}\n{traceback.format_exc()}")
+
+
+@app.post("/heat_equation/compare")
+async def compare_solutions(n: int = 32, t_final: float = 0.1):
+    """
+    Get comparison data between numerical and analytical solution at final time.
+    """
+    try:
+        start_time = time.time()
+        
+        # Compute nodes and matrices
+        quad_result = compute_gauss_legendre_golub_welsch(n)
+        nodes = np.array(quad_result["nodes"])
+        weights = np.array(quad_result["weights"])
+        
+        colloc_matrices = orthogonal_collocation_matrices(nodes, weights)
+        B_matrix = np.array(colloc_matrices["B_matrix"])
+        
+        # Solve
+        result = solve_heat_equation_collocation(
+            n, nodes, B_matrix,
+            t_span=(0, t_final),
+            t_eval=np.array([t_final])
+        )
+        
+        if result["success"]:
+            plot_data = plot_comparison_data(result)
+            elapsed = time.time() - start_time
+            
+            return {
+                "success": True,
+                "n": n,
+                "t_final": t_final,
+                "comparison": plot_data,
+                "elapsed_seconds": round(elapsed, 4)
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result.get("error"))
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.post("/heat_equation/convergence")
+async def study_convergence(request: ConvergenceStudyRequest):
+    """
+    Study convergence of collocation method with different n values.
+    """
+    try:
+        start_time = time.time()
+        
+        result = convergence_study(request.n_values, request.t_final)
+        
+        elapsed = time.time() - start_time
+        
+        return {
+            "success": True,
+            "convergence_data": result["convergence_data"],
+            "t_final": result["t_final"],
+            "n_values": result["n_values"],
+            "elapsed_seconds": round(elapsed, 4)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@app.get("/assignment3/info")
+async def assignment3_info():
+    """
+    Get information about Assignment 3 implementation.
+    """
+    return {
+        "assignment": "Assignment 3",
+        "description": "Gaussian Quadrature and Heat Equation Solver",
+        "methods": {
+            "gaussian_quadrature": {
+                "algorithm": "Golub-Welsch (1969)",
+                "description": "Compute nodes and weights from Jacobi matrix eigenvalues",
+                "max_n": 64
+            },
+            "lagrangian_weights": {
+                "description": "Alternative weight computation using Lagrangian interpolation"
+            },
+            "orthogonal_collocation": {
+                "description": "Compute A and B matrices for derivative approximation",
+                "use_case": "Solving differential equations"
+            },
+            "heat_equation": {
+                "problem": "1D heat diffusion in a beam",
+                "method": "Gauss-Legendre orthogonal collocation",
+                "comparison": "Analytical vs numerical solution"
+            }
+        },
+        "endpoints": {
+            "/gaussian/compute": "Compute nodes and weights for given n",
+            "/gaussian/compute_range": "Compute for n=1 to max_n",
+            "/gaussian/collocation_matrices": "Get A and B matrices",
+            "/gaussian/test_quadrature": "Test accuracy on known integral",
+            "/heat_equation/solve": "Solve heat equation with collocation",
+            "/heat_equation/compare": "Compare numerical vs analytical",
+            "/heat_equation/convergence": "Study convergence with different n"
+        }
+    }
