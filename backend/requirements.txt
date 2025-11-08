@@ -1,10 +1,18 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pydantic==2.5.0
-numpy==1.26.2
-scipy==1.11.4
-mpmath==1.3.0
-pytest==7.4.3
-pytest-cov==4.1.0
-pytest-asyncio==0.21.1
-python-multipart==0.0.6
+# === Flask backend ===
+Flask==3.0.3
+Flask-Cors==4.0.0
+
+# === Numerical / Scientific computation ===
+numpy==2.1.3
+scipy==1.14.1
+sympy==1.13.1
+
+# === Plotting (for heat_equation & quadrature visualizations) ===
+matplotlib==3.9.2
+
+# === Testing ===
+pytest==8.3.3
+
+# === Optional (nice-to-have tools, safe to remove if unneeded) ===
+ipython==8.27.0       # Interactive debugging/testing
+jupyter==1.1.1        # If you want to run notebooks

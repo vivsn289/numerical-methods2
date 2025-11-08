@@ -1,608 +1,202 @@
 """
-FastAPI main application
-Provides REST API endpoints for Harshad numbers and polynomial computations.
+Flask API with a simple in-memory job manager for iterative numerical tasks.
+
+Provides:
+- POST /api/job/start      start a job (returns job_id)
+- GET  /api/job/progress/<job_id>  poll job progress (status/progress/message)
+- GET  /api/job/result/<job_id>    fetch result once done
+
+Also synchronous endpoints kept:
+- GET /api/harshad/factorial?max_n=...
+- GET /api/harshad/consecutive?k=...&start_hint=...
+- GET /api/polynomial?order=...
+- GET /api/quadrature?n=...
+- GET /api/heat?n=...&eta_max=...
 """
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from typing import Optional, List
-import time
+import uuid
+import threading
 import traceback
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 
-from app.harshad import (
-    first_nonharshad_factorial,
-    find_consecutive_harshads,
-    explain_max_consecutive,
-    is_harshad
-)
-from app.polynomial import (
-    generate_legendre_coefficients,
-    build_companion_matrix,
-    compute_roots_eigenvalue,
-    solve_lu_system,
-    newton_raphson_root
-)
+from . import harshad, polynomial, gaussian_quadrature, heat_equation
 
-from app.gaussian_quadrature import (
-    compute_gauss_legendre_golub_welsch,
-    lagrange_weights,
-    orthogonal_collocation_matrices,
-    compute_up_to_n,
-    test_quadrature
-)
-from app.heat_equation import (
-    solve_heat_equation_collocation,
-    analytical_solution,
-    plot_comparison_data,
-    solve_multiple_times,
-    convergence_study
-)
+app = Flask(__name__)
+CORS(app)
 
-app = FastAPI(
-    title="Numerical Methods API",
-    description="Harshad numbers and polynomial root-finding",
-    version="1.0.0"
-)
-
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+_jobs = {}
+_jobs_lock = threading.Lock()
 
 
-# ============= Request/Response Models =============
-
-class ConsecutiveHarshadRequest(BaseModel):
-    length: int = Field(..., ge=1, le=50)
-    start_hint: Optional[int] = Field(default=1, ge=1)
-
-
-class PolynomialGenerateRequest(BaseModel):
-    n: int = Field(..., ge=1, le=100)
-    normalized: bool = Field(default=False)
+def _new_job(task_name: str):
+    job_id = uuid.uuid4().hex
+    rec = {"id": job_id, "task": task_name, "status": "pending", "progress": 0, "message": "", "result": None}
+    with _jobs_lock:
+        _jobs[job_id] = rec
+    return rec
 
 
-class PolynomialRootsRequest(BaseModel):
-    n: int = Field(..., ge=1, le=100)
-    method: str = Field(default="companion_eig")
-    precision: int = Field(default=64, ge=53, le=512)
-    normalized: bool = Field(default=False)
+def _update_job(job_id: str, **kwargs):
+    with _jobs_lock:
+        if job_id in _jobs:
+            _jobs[job_id].update(kwargs)
 
 
-class LUSolveRequest(BaseModel):
-    n: int = Field(..., ge=1, le=100)
-    method: str = Field(default="doolittle")
-    normalized: bool = Field(default=False)
+def _get_job(job_id: str):
+    with _jobs_lock:
+        return _jobs.get(job_id)
 
 
-class NewtonRootsRequest(BaseModel):
-    n: int = Field(..., ge=1, le=100)
-    which: str = Field(default="both")  # "min", "max", or "both"
-    precision: int = Field(default=64)
-    normalized: bool = Field(default=False)
-    initial_guesses: Optional[List[float]] = None
-
-class GaussQuadratureRequest(BaseModel):
-    n: int = Field(..., ge=1, le=64)
-    compute_lagrange: bool = Field(default=True)
+@app.route("/")
+def home():
+    return "<h3>Numerical Methods API — Job manager available at /api/job/*</h3>"
 
 
-class CollocationMatricesRequest(BaseModel):
-    n: int = Field(..., ge=2, le=64)
-
-
-class HeatEquationRequest(BaseModel):
-    n: int = Field(default=32, ge=4, le=64)
-    t_final: float = Field(default=0.1, ge=0.0, le=10.0)
-    num_time_points: int = Field(default=50, ge=2, le=200)
-    T0: float = Field(default=0.0)
-    Ts: float = Field(default=1.0)
-
-
-class ConvergenceStudyRequest(BaseModel):
-    n_values: List[int] = Field(default=[8, 16, 32])
-    t_final: float = Field(default=0.1)
-
-
-# ============= Harshad Endpoints =============
-
-@app.post("/harshad/first_nonharshad")
-async def find_first_nonharshad():
+@app.route("/api/job/start", methods=["POST"])
+def start_job():
     """
-    Find the first factorial that is not a Harshad number.
-    Returns k, factorial value, and explanation.
+    Start a background job.
+
+    JSON body:
+      { "task": "harshad_factorial" | "harshad_consec" | "polynomial" | "quadrature" | "heat",
+        "params": {...} }
     """
     try:
-        start_time = time.time()
-        result = first_nonharshad_factorial()
-        elapsed = time.time() - start_time
-        
-        return {
-            "success": True,
-            "k": result["k"],
-            "factorial_value": result["factorial_value"],
-            "is_harshad": result["is_harshad"],
-            "explanation": result["explanation"],
-            "next_factorial": result.get("next_factorial"),
-            "elapsed_seconds": round(elapsed, 4)
-        }
+        payload = request.get_json(force=True)
+        task = payload.get("task")
+        params = payload.get("params", {})
+
+        allowed = {"harshad_factorial", "harshad_consec", "polynomial", "quadrature", "heat"}
+        if task not in allowed:
+            return jsonify({"error": "unknown task"}), 400
+
+        job = _new_job(task)
+
+        def runner():
+            try:
+                _update_job(job["id"], status="running", progress=0, message="starting")
+                if task == "harshad_factorial":
+                    max_k = int(params.get("max_k", 500))
+                    res = harshad.first_nonharshad_factorial(max_k=max_k,
+                                                            progress_callback=lambda p, m=None: _update_job(job["id"], progress=p, message=(m or "")))
+                    _update_job(job["id"], result=res, progress=100, status="done", message="completed")
+                elif task == "harshad_consec":
+                    length = int(params.get("length", 10))
+                    start_hint = int(params.get("start_hint", 2))
+                    max_iter = int(params.get("max_iter", 2_000_000))
+                    res = harshad.find_consecutive_harshads(length=length, start_hint=start_hint, max_iter=max_iter,
+                                                            progress_callback=lambda p, m=None: _update_job(job["id"], progress=p, message=(m or "")))
+                    _update_job(job["id"], result=res, progress=100, status="done", message="completed")
+                elif task == "polynomial":
+                    order = int(params.get("order", 10))
+                    res = polynomial.compute_polynomial_pipeline(order=order,
+                                                                 progress_callback=lambda p, m=None: _update_job(job["id"], progress=p, message=(m or "")))
+                    _update_job(job["id"], result=res, progress=100, status="done", message="completed")
+                elif task == "quadrature":
+                    n = int(params.get("n", 32))
+                    res = gaussian_quadrature.compute_quadrature_pipeline(n=n,
+                                                                          progress_callback=lambda p, m=None: _update_job(job["id"], progress=p, message=(m or "")))
+                    _update_job(job["id"], result=res, progress=100, status="done", message="completed")
+                elif task == "heat":
+                    n = int(params.get("n", 32))
+                    eta_max = float(params.get("eta_max", 3.0))
+                    res = heat_equation.compute_heat_pipeline(n=n, eta_max=eta_max,
+                                                              progress_callback=lambda p, m=None: _update_job(job["id"], progress=p, message=(m or "")))
+                    _update_job(job["id"], result=res, progress=100, status="done", message="completed")
+                else:
+                    _update_job(job["id"], status="error", message="unsupported task")
+            except Exception as e:
+                traceback.print_exc()
+                _update_job(job["id"], status="error", message=str(e))
+
+        t = threading.Thread(target=runner, daemon=True)
+        t.start()
+
+        return jsonify({"job_id": job["id"]})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}\n{traceback.format_exc()}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
-@app.post("/harshad/consecutive")
-async def find_consecutive(request: ConsecutiveHarshadRequest):
-    """
-    Find N consecutive Harshad numbers.
-    """
+@app.route("/api/job/progress/<job_id>")
+def job_progress(job_id):
+    job = _get_job(job_id)
+    if not job:
+        return jsonify({"error": "unknown job"}), 404
+    return jsonify({"status": job["status"], "progress": job["progress"], "message": job.get("message", "")})
+
+
+@app.route("/api/job/result/<job_id>")
+def job_result(job_id):
+    job = _get_job(job_id)
+    if not job:
+        return jsonify({"error": "unknown job"}), 404
+    if job["status"] != "done":
+        return jsonify({"error": "job not finished", "status": job["status"], "progress": job["progress"]}), 400
+    return jsonify({"result": job["result"]})
+
+
+# ----------------------------
+# Synchronous compatibility endpoints
+# ----------------------------
+@app.route("/api/harshad/factorial")
+def harshad_factorial_sync():
     try:
-        start_time = time.time()
-        
-        if request.length >= 20:
-            return {
-                "success": False,
-                "error": "Cannot find 20 or more consecutive Harshad numbers",
-                "explanation": explain_max_consecutive()
-            }
-        
-        result = find_consecutive_harshads(request.length, request.start_hint)
-        elapsed = time.time() - start_time
-        
-        return {
-            "success": True,
-            "length": request.length,
-            "consecutive_numbers": result["numbers"],
-            "start": result["start"],
-            "end": result["end"],
-            "verification": result["verification"],
-            "elapsed_seconds": round(elapsed, 4)
-        }
+        n = int(request.args.get("max_n", 500))
+        res = harshad.first_nonharshad_factorial(max_k=n)
+        return jsonify({"result": res})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 400
 
 
-@app.get("/harshad/explain_max")
-async def explain_maximum_consecutive():
-    """
-    Explain why there cannot be 20 or more consecutive Harshad numbers.
-    """
-    return {
-        "explanation": explain_max_consecutive()
-    }
-
-
-# ============= Polynomial Endpoints =============
-
-@app.post("/polynomial/generate")
-async def generate_polynomial(request: PolynomialGenerateRequest):
-    """
-    Generate Legendre polynomial coefficients for degree n.
-    """
+@app.route("/api/harshad/consecutive")
+def harshad_consec_sync():
     try:
-        start_time = time.time()
-        result = generate_legendre_coefficients(request.n, request.normalized)
-        elapsed = time.time() - start_time
-        
-        return {
-            "success": True,
-            "degree": request.n,
-            "normalized": request.normalized,
-            "coefficients": result["coefficients"],
-            "coefficient_summary": result["summary"],
-            "elapsed_seconds": round(elapsed, 4)
-        }
+        k = int(request.args.get("k", 10))
+        start_hint = int(request.args.get("start_hint", 2))
+        max_iter = int(request.args.get("max_iter", 2_000_000))
+        res = harshad.find_consecutive_harshads(length=k, start_hint=start_hint, max_iter=max_iter)
+        return jsonify(res)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 400
 
 
-@app.post("/polynomial/companion")
-async def get_companion_matrix(request: PolynomialGenerateRequest):
-    """
-    Build companion matrix for the polynomial.
-    """
+@app.route("/api/polynomial")
+def polynomial_sync():
     try:
-        start_time = time.time()
-        
-        # Generate coefficients first
-        poly_result = generate_legendre_coefficients(request.n, request.normalized)
-        coeffs = poly_result["coefficients"]
-        
-        # Build companion matrix
-        result = build_companion_matrix(coeffs)
-        elapsed = time.time() - start_time
-        
-        return {
-            "success": True,
-            "degree": request.n,
-            "shape": result["shape"],
-            "matrix_preview": result["preview"],
-            "properties": result["properties"],
-            "elapsed_seconds": round(elapsed, 4)
-        }
+        order = int(request.args.get("order", 10))
+        res = polynomial.compute_polynomial_pipeline(order=order)
+        return jsonify(res)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 400
 
 
-@app.post("/polynomial/roots")
-async def compute_roots(request: PolynomialRootsRequest):
-    """
-    Compute roots of the polynomial using eigenvalue method.
-    """
+@app.route("/api/quadrature")
+def quadrature_sync():
     try:
-        start_time = time.time()
-        
-        result = compute_roots_eigenvalue(
-            request.n,
-            request.method,
-            request.precision,
-            request.normalized
-        )
-        elapsed = time.time() - start_time
-        
-        return {
-            "success": True,
-            "degree": request.n,
-            "method": request.method,
-            "precision": request.precision,
-            "roots": result["roots"],
-            "smallest_root": result["smallest_root"],
-            "largest_root": result["largest_root"],
-            "error_estimates": result["error_estimates"],
-            "elapsed_seconds": round(elapsed, 4),
-            "warnings": result.get("warnings", [])
-        }
+        n = int(request.args.get("n", 32))
+        res = gaussian_quadrature.compute_quadrature_pipeline(n=n)
+        return jsonify(res)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 400
 
 
-@app.post("/polynomial/lu_solve")
-async def lu_solve(request: LUSolveRequest):
-    """
-    Solve Ax = b using LU decomposition where A is companion matrix.
-    b = [1, 2, 3, ..., n]
-    """
+@app.route("/api/heat")
+def heat_sync():
     try:
-        start_time = time.time()
-        
-        result = solve_lu_system(request.n, request.method, request.normalized)
-        elapsed = time.time() - start_time
-        
-        return {
-            "success": True,
-            "degree": request.n,
-            "method": request.method,
-            "solution_x": result["x"],
-            "residual_norm": result["residual_norm"],
-            "condition_number": result.get("condition_number"),
-            "elapsed_seconds": round(elapsed, 4),
-            "verification": result.get("verification")
-        }
+        n = int(request.args.get("n", 32))
+        eta_max = float(request.args.get("eta_max", 3.0))
+        res = heat_equation.compute_heat_pipeline(n=n, eta_max=eta_max)
+        return jsonify(res)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
-
-@app.post("/polynomial/newton_roots")
-async def newton_refine_roots(request: NewtonRootsRequest):
-    """
-    Refine smallest and/or largest roots using Newton-Raphson method.
-    """
-    try:
-        start_time = time.time()
-        
-        result = newton_raphson_root(
-            request.n,
-            request.which,
-            request.precision,
-            request.normalized,
-            request.initial_guesses
-        )
-        elapsed = time.time() - start_time
-        
-        return {
-            "success": True,
-            "degree": request.n,
-            "which": request.which,
-            "precision": request.precision,
-            "results": result["results"],
-            "elapsed_seconds": round(elapsed, 4)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy", "version": "1.0.0"}
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 400
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-
-@app.post("/gaussian/compute")
-async def compute_gaussian_quadrature(request: GaussQuadratureRequest):
-    """
-    Compute Gauss-Legendre nodes and weights using Golub-Welsch algorithm.
-    Optionally compute weights using Lagrangian interpolation.
-    """
-    try:
-        start_time = time.time()
-        
-        # Compute using Golub-Welsch
-        result = compute_gauss_legendre_golub_welsch(request.n)
-        
-        # Compute using Lagrange if requested
-        if request.compute_lagrange:
-            nodes_array = np.array(result["nodes"])
-            lagrange_w = lagrange_weights(nodes_array)
-            result["weights_lagrange"] = lagrange_w.tolist()
-            
-            # Compare both methods
-            weights_gw = np.array(result["weights"])
-            diff = np.abs(weights_gw - lagrange_w)
-            result["comparison"] = {
-                "max_difference": float(np.max(diff)),
-                "rms_difference": float(np.sqrt(np.mean(diff**2)))
-            }
-        
-        elapsed = time.time() - start_time
-        
-        return {
-            "success": True,
-            "n": request.n,
-            "nodes": result["nodes"],
-            "weights": result["weights"],
-            "weights_lagrange": result.get("weights_lagrange"),
-            "comparison": result.get("comparison"),
-            "sum_weights": sum(result["weights"]),
-            "elapsed_seconds": round(elapsed, 4)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
-
-@app.post("/gaussian/compute_range")
-async def compute_gaussian_range(max_n: int = 64):
-    """
-    Compute Gauss-Legendre quadrature for n=1 to max_n.
-    """
-    try:
-        start_time = time.time()
-        
-        result = compute_up_to_n(max_n)
-        elapsed = time.time() - start_time
-        
-        return {
-            "success": True,
-            "max_n": max_n,
-            "results": result["results"],
-            "elapsed_seconds": round(elapsed, 4)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
-
-@app.post("/gaussian/collocation_matrices")
-async def compute_collocation_matrices(request: CollocationMatricesRequest):
-    """
-    Compute A and B matrices for orthogonal collocation at n points.
-    """
-    try:
-        start_time = time.time()
-        
-        # First compute nodes and weights
-        quad_result = compute_gauss_legendre_golub_welsch(request.n)
-        nodes = np.array(quad_result["nodes"])
-        weights = np.array(quad_result["weights"])
-        
-        # Compute collocation matrices
-        result = orthogonal_collocation_matrices(nodes, weights)
-        
-        elapsed = time.time() - start_time
-        
-        return {
-            "success": True,
-            "n": request.n,
-            "A_matrix": result["A_matrix"],
-            "B_matrix": result["B_matrix"],
-            "A_shape": result["A_shape"],
-            "B_shape": result["B_shape"],
-            "A_norm": result["A_norm"],
-            "B_norm": result["B_norm"],
-            "nodes": quad_result["nodes"],
-            "weights": quad_result["weights"],
-            "elapsed_seconds": round(elapsed, 4)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
-
-@app.post("/gaussian/test_quadrature")
-async def test_gauss_quadrature(n: int = 32):
-    """
-    Test Gauss-Legendre quadrature accuracy on known integrals.
-    """
-    try:
-        start_time = time.time()
-        
-        # Compute quadrature
-        result = compute_gauss_legendre_golub_welsch(n)
-        nodes = result["nodes"]
-        weights = result["weights"]
-        
-        # Test on x^2 (exact for sufficient n)
-        test_result = test_quadrature(nodes, weights)
-        
-        elapsed = time.time() - start_time
-        
-        return {
-            "success": True,
-            "n": n,
-            "test_function": "x^2",
-            "exact_value": test_result["exact"],
-            "approximate_value": test_result["approximate"],
-            "absolute_error": test_result["absolute_error"],
-            "relative_error": test_result["relative_error"],
-            "elapsed_seconds": round(elapsed, 4)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-@app.post("/heat_equation/solve")
-async def solve_heat_eq(request: HeatEquationRequest):
-    """
-    Solve the 1D heat equation using Gauss-Legendre collocation method.
-    Compare with analytical solution.
-    """
-    try:
-        start_time = time.time()
-        
-        # Compute nodes and matrices
-        quad_result = compute_gauss_legendre_golub_welsch(request.n)
-        nodes = np.array(quad_result["nodes"])
-        weights = np.array(quad_result["weights"])
-        
-        colloc_matrices = orthogonal_collocation_matrices(nodes, weights)
-        B_matrix = np.array(colloc_matrices["B_matrix"])
-        
-        # Solve heat equation
-        t_eval = np.linspace(0, request.t_final, request.num_time_points)
-        result = solve_heat_equation_collocation(
-            request.n, nodes, B_matrix,
-            t_span=(0, request.t_final),
-            t_eval=t_eval,
-            T0=request.T0,
-            Ts=request.Ts
-        )
-        
-        elapsed = time.time() - start_time
-        
-        if result["success"]:
-            return {
-                "success": True,
-                "n": request.n,
-                "nodes": result["nodes"],
-                "t_eval": result["t_eval"],
-                "solution": result["solution"],
-                "final_solution": {
-                    "numerical": result["theta_numerical"],
-                    "analytical": result["theta_analytical"],
-                    "error": result["error"]
-                },
-                "max_error": result["max_error"],
-                "rms_error": result["rms_error"],
-                "elapsed_seconds": round(elapsed, 4)
-            }
-        else:
-            raise HTTPException(status_code=500, detail=result.get("error", "Unknown error"))
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}\n{traceback.format_exc()}")
-
-
-@app.post("/heat_equation/compare")
-async def compare_solutions(n: int = 32, t_final: float = 0.1):
-    """
-    Get comparison data between numerical and analytical solution at final time.
-    """
-    try:
-        start_time = time.time()
-        
-        # Compute nodes and matrices
-        quad_result = compute_gauss_legendre_golub_welsch(n)
-        nodes = np.array(quad_result["nodes"])
-        weights = np.array(quad_result["weights"])
-        
-        colloc_matrices = orthogonal_collocation_matrices(nodes, weights)
-        B_matrix = np.array(colloc_matrices["B_matrix"])
-        
-        # Solve
-        result = solve_heat_equation_collocation(
-            n, nodes, B_matrix,
-            t_span=(0, t_final),
-            t_eval=np.array([t_final])
-        )
-        
-        if result["success"]:
-            plot_data = plot_comparison_data(result)
-            elapsed = time.time() - start_time
-            
-            return {
-                "success": True,
-                "n": n,
-                "t_final": t_final,
-                "comparison": plot_data,
-                "elapsed_seconds": round(elapsed, 4)
-            }
-        else:
-            raise HTTPException(status_code=500, detail=result.get("error"))
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
-
-@app.post("/heat_equation/convergence")
-async def study_convergence(request: ConvergenceStudyRequest):
-    """
-    Study convergence of collocation method with different n values.
-    """
-    try:
-        start_time = time.time()
-        
-        result = convergence_study(request.n_values, request.t_final)
-        
-        elapsed = time.time() - start_time
-        
-        return {
-            "success": True,
-            "convergence_data": result["convergence_data"],
-            "t_final": result["t_final"],
-            "n_values": result["n_values"],
-            "elapsed_seconds": round(elapsed, 4)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
-
-@app.get("/assignment3/info")
-async def assignment3_info():
-    """
-    Get information about Assignment 3 implementation.
-    """
-    return {
-        "assignment": "Assignment 3",
-        "description": "Gaussian Quadrature and Heat Equation Solver",
-        "methods": {
-            "gaussian_quadrature": {
-                "algorithm": "Golub-Welsch (1969)",
-                "description": "Compute nodes and weights from Jacobi matrix eigenvalues",
-                "max_n": 64
-            },
-            "lagrangian_weights": {
-                "description": "Alternative weight computation using Lagrangian interpolation"
-            },
-            "orthogonal_collocation": {
-                "description": "Compute A and B matrices for derivative approximation",
-                "use_case": "Solving differential equations"
-            },
-            "heat_equation": {
-                "problem": "1D heat diffusion in a beam",
-                "method": "Gauss-Legendre orthogonal collocation",
-                "comparison": "Analytical vs numerical solution"
-            }
-        },
-        "endpoints": {
-            "/gaussian/compute": "Compute nodes and weights for given n",
-            "/gaussian/compute_range": "Compute for n=1 to max_n",
-            "/gaussian/collocation_matrices": "Get A and B matrices",
-            "/gaussian/test_quadrature": "Test accuracy on known integral",
-            "/heat_equation/solve": "Solve heat equation with collocation",
-            "/heat_equation/compare": "Compare numerical vs analytical",
-            "/heat_equation/convergence": "Study convergence with different n"
-        }
-    }
+    app.run(debug=True, threaded=True)

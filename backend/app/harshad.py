@@ -1,240 +1,92 @@
 """
-Harshad Number Functions
-
-A Harshad number (or Niven number) is an integer that is divisible by the sum of its digits.
-Example: 18 is Harshad because 1 + 8 = 9 and 18 % 9 = 0.
+Iterative, large-input safe Harshad module with progress callback.
 """
 
-import math
-from typing import Dict, List
+from typing import Any, Dict, List, Optional, Callable
+
+ProgressCB = Optional[Callable[[int, Optional[str]], None]]
 
 
 def digit_sum(n: int) -> int:
-    """
-    Calculate the sum of digits of a positive integer.
-    
-    Args:
-        n: Positive integer
-        
-    Returns:
-        Sum of digits
-    """
-    return sum(int(digit) for digit in str(abs(n)))
+    """Digit sum using string conversion. Handles negatives safely."""
+    return sum(int(ch) for ch in str(abs(int(n))))
 
 
 def is_harshad(n: int) -> bool:
-    """
-    Check if a number is a Harshad number.
-    
-    A Harshad number is divisible by the sum of its digits.
-    
-    Args:
-        n: Integer to check
-        
-    Returns:
-        True if n is a Harshad number, False otherwise
-    """
+    """True if n is divisible by its digit sum."""
+    n = int(n)
     if n <= 0:
         return False
-    
-    ds = digit_sum(n)
-    return n % ds == 0
+    s = digit_sum(n)
+    return s != 0 and (n % s == 0)
 
 
-def factorial(n: int) -> int:
+def factorial_iterative(max_k: int, progress_callback: ProgressCB = None) -> Dict[int, int]:
     """
-    Compute factorial using Python's arbitrary precision integers.
-    
-    Args:
-        n: Non-negative integer
-        
-    Returns:
-        n! = n * (n-1) * ... * 1
+    Generator-like factorial computation up to max_k.
+    Returns a dict {k: factorial(k)} for 1..max_k.
     """
-    return math.factorial(n)
+    results = {}
+    f = 1
+    for k in range(1, max_k + 1):
+        f *= k
+        results[k] = f
+        if progress_callback and (k % max(1, max_k // 100) == 0):
+            progress_callback(int(100 * k / max_k), f"computed {k}!")
+    return results
 
 
-def first_nonharshad_factorial() -> Dict:
-    """
-    Find the first factorial that is NOT a Harshad number.
-    
-    Iterates through 1!, 2!, 3!, ... until finding a non-Harshad factorial.
-    Also computes the next factorial to check if it's Harshad.
-    
-    Returns:
-        Dictionary with:
-            - k: the factorial index
-            - factorial_value: string representation of k!
-            - is_harshad: False
-            - explanation: detailed explanation
-            - next_factorial: info about (k+1)!
-            
-    Complexity: O(k * log(k!)) where k is the result
-    """
-    k = 1
-    # Note: Many small factorials are Harshad numbers
-    # We need to search with a reasonable limit
-    # Mathematical fact: The first non-Harshad factorial is 4!
-    # But let's verify by computation
-    
-    while k <= 200:  # Increased limit to ensure we find it
-        fact_k = factorial(k)
-        ds = digit_sum(fact_k)
-        is_h = (fact_k % ds == 0)
-        
-        if not is_h:
-            # Found first non-Harshad factorial
-            next_k = k + 1
-            next_fact = factorial(next_k)
-            next_ds = digit_sum(next_fact)
-            next_is_h = (next_fact % next_ds == 0)
-            
+def first_nonharshad_factorial(max_k: int = 5000, progress_callback: ProgressCB = None) -> Dict[str, Any]:
+    """Find first factorial that is NOT Harshad."""
+    fact = 1
+    for k in range(1, max_k + 1):
+        fact *= k
+        ds = digit_sum(fact)
+        if progress_callback and k % max(1, max_k // 100) == 0:
+            progress_callback(int(100 * k / max_k), f"checked {k}!")
+        if ds != 0 and fact % ds != 0:
+            next_fact = fact * (k + 1)
             return {
                 "k": k,
-                "factorial_value": str(fact_k),
+                "factorial_value": str(fact),
                 "digit_sum": ds,
                 "is_harshad": False,
-                "explanation": (
-                    f"{k}! = {fact_k}\n"
-                    f"Digit sum = {ds}\n"
-                    f"{fact_k} ÷ {ds} = {fact_k // ds} remainder {fact_k % ds}\n"
-                    f"Since {fact_k} % {ds} ≠ 0, {k}! is NOT a Harshad number."
-                ),
                 "next_factorial": {
-                    "k": next_k,
-                    "value": str(next_fact),
-                    "digit_sum": next_ds,
-                    "is_harshad": next_is_h,
-                    "explanation": (
-                        f"{next_k}! = {next_fact}\n"
-                        f"Digit sum = {next_ds}\n"
-                        f"{next_fact} ÷ {next_ds} = {next_fact // next_ds} remainder {next_fact % next_ds}\n"
-                        f"{'IS' if next_is_h else 'IS NOT'} a Harshad number."
-                    )
+                    "k": k + 1,
+                    "digit_sum": digit_sum(next_fact),
+                    "is_harshad": (next_fact % digit_sum(next_fact) == 0)
                 }
             }
-        k += 1
-    
-    return {
-        "error": "No non-Harshad factorial found within limit",
-        "k": None,
-        "factorial_value": "N/A"
-    }
+    return {"error": f"No non-Harshad factorial found up to {max_k}"}
 
 
-def find_consecutive_harshads(length: int, start_hint: int = 1) -> Dict:
-    """
-    Find 'length' consecutive Harshad numbers.
-    
-    Searches for a sequence of consecutive integers where all are Harshad numbers.
-    For length=10, known example starts at 510510.
-    
-    Args:
-        length: Number of consecutive Harshad numbers to find
-        start_hint: Starting point for search
-        
-    Returns:
-        Dictionary with consecutive numbers, verification, and search details
-        
-    Complexity: O(n * log(n)) where n is the search space
-    """
-    if length >= 20:
-        raise ValueError("Cannot find 20 or more consecutive Harshad numbers (see explain_max_consecutive)")
-    
-    # For length=10, known sequence starts at 510510
-    if length == 10 and start_hint < 510510:
-        start_hint = 510510
-    
-    # For length=3, example at 110
-    if length == 3 and start_hint == 1:
-        start_hint = 100
-    
-    current = start_hint
-    consecutive_count = 0
-    start_of_sequence = None
-    max_iterations = 2000000  # Increased iteration limit
-    iterations = 0
-    
-    while iterations < max_iterations:
-        if is_harshad(current):
-            if consecutive_count == 0:
-                start_of_sequence = current
-            consecutive_count += 1
-            
-            if consecutive_count == length:
-                # Found the sequence
-                numbers = list(range(start_of_sequence, start_of_sequence + length))
-                
-                # Verify each number
-                verification = []
-                for num in numbers:
-                    ds = digit_sum(num)
-                    verification.append({
-                        "number": num,
-                        "digit_sum": ds,
-                        "is_harshad": is_harshad(num),
-                        "check": f"{num} ÷ {ds} = {num // ds}"
-                    })
-                
+def find_consecutive_harshads(length: int, start_hint: int = 1, max_iter: int = 10_000_000,
+                              progress_callback: ProgressCB = None) -> Dict[str, Any]:
+    """Find length consecutive Harshad numbers iteratively."""
+    if length <= 0:
+        raise ValueError("length must be > 0")
+    if length >= 25:
+        raise ValueError("Finding >25 consecutive Harshads is computationally infeasible.")
+
+    count, start_seq = 0, None
+    for i in range(start_hint, start_hint + max_iter):
+        if progress_callback and i % max(1, max_iter // 200) == 0:
+            pct = int(100 * (i - start_hint) / max_iter)
+            progress_callback(min(pct, 99), f"scanning {i}")
+        if is_harshad(i):
+            count += 1
+            if count == 1:
+                start_seq = i
+            if count == length:
+                nums = list(range(start_seq, start_seq + length))
                 return {
-                    "numbers": numbers,
-                    "start": start_of_sequence,
-                    "end": start_of_sequence + length - 1,
-                    "length": length,
-                    "verification": verification,
-                    "iterations": iterations
+                    "start": start_seq,
+                    "end": start_seq + length - 1,
+                    "numbers": nums,
+                    "verification": [
+                        {"n": n, "digit_sum": digit_sum(n), "is_harshad": is_harshad(n)} for n in nums
+                    ]
                 }
         else:
-            consecutive_count = 0
-            start_of_sequence = None
-        
-        current += 1
-        iterations += 1
-    
-    raise ValueError(f"Could not find {length} consecutive Harshad numbers within {max_iterations} iterations")
-
-
-def explain_max_consecutive() -> str:
-    """
-    Explain why there cannot be 20 or more consecutive Harshad numbers.
-    
-    Uses modular arithmetic and digit sum properties:
-    - Digit sums modulo 9 cycle through remainders
-    - For 20+ consecutive numbers, at least one must have digit_sum ≡ 0 (mod certain prime)
-    - This creates divisibility constraints that cannot all be satisfied
-    
-    Returns:
-        Explanation string
-    """
-    explanation = """
-WHY NO 20+ CONSECUTIVE HARSHAD NUMBERS:
-
-A Harshad number n must satisfy: n ≡ 0 (mod S(n)), where S(n) is the digit sum.
-
-Key Observations:
-1. In any sequence of consecutive integers, digit sums follow a pattern modulo 9.
-2. For 20 consecutive integers n, n+1, ..., n+19:
-   - At least TWO numbers will have the SAME digit sum modulo 9
-   - At least ONE number will have digit sum ≡ 0 (mod 3)
-
-3. Consider digit sums modulo small primes:
-   - For a number to be Harshad, if S(n) has a prime factor p, then n ≡ 0 (mod p)
-   - In 20 consecutive integers, modulo any prime p ≥ 20, we cover fewer than p residues
-   - But digit sums can vary such that divisibility requirements conflict
-
-4. Pigeonhole Principle:
-   - Among 20 consecutive numbers, digit sums can only change by ±1 at digit boundaries
-   - Digit sum ranges are limited (typically span < 20 values)
-   - Divisibility by digit sum creates constraints that cannot all hold simultaneously
-
-5. Concrete Example:
-   - If n has digit sum 18, then n ≡ 0 (mod 18), so n ≡ 0 (mod 2) and n ≡ 0 (mod 9)
-   - Then n+1 has different parity, so if S(n+1) is even, n+1 is odd → not divisible by 2
-   - This creates contradictions in longer sequences
-
-Proven Result: The maximum length of consecutive Harshad numbers is 20 (achieved rarely),
-but sequences of length ≥21 are impossible due to modular arithmetic constraints.
-
-Practical: Finding even length-10 sequences is rare (e.g., 510510-510519).
-"""
-    return explanation.strip()
+            count, start_seq = 0, None
+    return {"error": f"Run not found within {max_iter} iterations"}
