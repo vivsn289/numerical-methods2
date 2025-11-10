@@ -1,154 +1,86 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Numerical Methods Solver — Local</title>
+  <title>Numerical Methods Web App</title>
   <link rel="stylesheet" href="styles.css" />
-  <script>
-    window.MathJax = { tex: { inlineMath: [['$','$'], ['\\(','\\)']] }, svg: { fontCache: 'global' } };
-  </script>
-  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <h1>Numerical Methods — Local Solver</h1>
-    <p class="subtitle">Assignments 2 & 3 — Harshad, Legendre, Gaussian Quadrature & Heat</p>
+  <header>
+    <h1>Numerical Methods Web App</h1>
+    <nav>Harshad · Legendre · Gaussian Quadrature · Heat Equation</nav>
   </header>
 
-  <main class="container">
-    <nav class="tabs" role="tablist">
-      <button class="tab active" data-target="harshad">Harshad</button>
-      <button class="tab" data-target="polynomial">Polynomial</button>
-      <button class="tab" data-target="quadrature">Quadrature</button>
-      <button class="tab" data-target="heat">Heat Equation</button>
-    </nav>
+  <main>
+    <!-- HARSHAD -->
+    <section>
+      <h2>Harshad Numbers</h2>
+      <p>All three Harshad tools: (1) First non-Harshad factorial, (2) Non-Harshad factorials in a range, (3) K consecutive Harshad numbers (with start hint)</p>
 
-    <section class="tab-content">
-      <!-- HARSHAD -->
-      <article id="harshad" class="pane active">
-        <div class="problem-card">
-          <h2>Harshad Numbers</h2>
-          <form id="form-harshad">
-            <div class="controls-row">
-              <label>Max factorial to check</label>
-              <input type="number" id="harshad-max" value="500" min="5" max="5000" />
-            </div>
-            <div class="controls-row">
-              <button type="submit" class="primary">Find first non-Harshad factorial</button>
-            </div>
-          </form>
+      <div class="input-group">
+        <button id="btn-harshad-first">Find First Non-Harshad Factorial</button>
+      </div>
+      <div id="harshad-first-out" class="output"></div>
 
-          <div class="progress-wrap">
-            <progress id="harshad-factorial-progress" value="0" max="100" style="width:100%"></progress>
-            <div id="harshad-factorial-msg" class="mono muted"></div>
-          </div>
+      <div class="input-group">
+        <label>Range start k:</label>
+        <input type="number" id="harshad-range-start" value="1" />
+        <label>Range end k:</label>
+        <input type="number" id="harshad-range-end" value="50" />
+        <button id="btn-harshad-range">Scan Range</button>
+      </div>
+      <div id="harshad-range-out" class="output"></div>
 
-          <div id="harshad-factorial-result" class="result hidden"></div>
+      <div class="input-group">
+        <label>K:</label>
+        <input type="number" id="harshad-k" value="3" />
+        <label>Start hint:</label>
+        <input type="number" id="harshad-start" value="109" />
+        <button id="btn-harshad-consec">Find Consecutive Harshads</button>
+      </div>
+      <div id="harshad-consec-out" class="output"></div>
+    </section>
 
-          <hr class="divider" />
+    <!-- POLYNOMIAL -->
+    <section>
+      <h2>Modified Legendre Polynomial</h2>
+      <div class="input-group">
+        <label>Order n (2-64):</label>
+        <input type="number" id="poly-n" value="10" />
+        <button id="btn-poly">Compute Polynomial</button>
+      </div>
+      <div id="poly-out" class="output"></div>
+    </section>
 
-          <form id="form-harshad-consec">
-            <div class="controls-row">
-              <label>Consecutive k</label>
-              <input type="number" id="harshad-k" value="10" min="2" max="20" />
-            </div>
-            <div class="controls-row">
-              <label>Start hint</label>
-              <input type="number" id="harshad-hint" value="2" min="1" />
-            </div>
-            <div class="controls-row">
-              <button type="submit" class="primary">Find consecutive</button>
-            </div>
-          </form>
+    <!-- QUADRATURE -->
+    <section>
+      <h2>Gaussian Quadrature</h2>
+      <div class="input-group">
+        <label>n:</label>
+        <input type="number" id="quad-n" value="32" />
+        <button id="btn-quad">Compute Quadrature</button>
+      </div>
+      <div id="quad-out" class="output"></div>
+    </section>
 
-          <div class="progress-wrap">
-            <progress id="harshad-consec-progress" value="0" max="100" style="width:100%"></progress>
-            <div id="harshad-consec-msg" class="mono muted"></div>
-          </div>
-
-          <div id="harshad-consec-result" class="result hidden"></div>
-        </div>
-      </article>
-
-      <!-- POLYNOMIAL -->
-      <article id="polynomial" class="pane">
-        <div class="problem-card">
-          <h2>Modified Legendre Polynomial</h2>
-          <form id="form-poly">
-            <div class="controls-row">
-              <label>Order n</label>
-              <input type="number" id="poly-order" value="10" min="2" max="256" />
-            </div>
-            <div class="controls-row">
-              <button type="submit" class="primary">Compute</button>
-            </div>
-          </form>
-
-          <div class="progress-wrap">
-            <progress id="poly-progress" value="0" max="100" style="width:100%"></progress>
-            <div id="poly-progress-msg" class="mono muted"></div>
-          </div>
-
-          <div id="poly-result" class="result hidden"></div>
-        </div>
-      </article>
-
-      <!-- QUADRATURE -->
-      <article id="quadrature" class="pane">
-        <div class="problem-card">
-          <h2>Golub–Welsch Quadrature</h2>
-          <form id="form-quad">
-            <div class="controls-row">
-              <label>n</label>
-              <input type="number" id="quad-n" value="32" min="2" max="256" />
-            </div>
-            <div class="controls-row">
-              <button type="submit" class="primary">Compute</button>
-            </div>
-          </form>
-
-          <div class="progress-wrap">
-            <progress id="quad-progress" value="0" max="100" style="width:100%"></progress>
-            <div id="quad-progress-msg" class="mono muted"></div>
-          </div>
-
-          <div id="quad-result" class="result hidden"></div>
-        </div>
-      </article>
-
-      <!-- HEAT -->
-      <article id="heat" class="pane">
-        <div class="problem-card">
-          <h2>Heat Equation</h2>
-          <form id="form-heat">
-            <div class="controls-row">
-              <label>Gauss nodes n</label>
-              <input type="number" id="heat-n" value="32" min="2" max="256" />
-            </div>
-            <div class="controls-row">
-              <label>eta_max</label>
-              <input type="number" id="heat-eta" value="3.0" min="0.5" step="0.5" />
-            </div>
-            <div class="controls-row">
-              <button type="submit" class="primary">Compute heat solution</button>
-            </div>
-          </form>
-
-          <div class="progress-wrap">
-            <progress id="heat-progress" value="0" max="100" style="width:100%"></progress>
-            <div id="heat-progress-msg" class="mono muted"></div>
-          </div>
-
-          <div id="heat-result" class="result hidden"></div>
-        </div>
-      </article>
-
+    <!-- HEAT -->
+    <section>
+      <h2>Heat Equation — Collocation vs Analytic</h2>
+      <div class="input-group">
+        <label>n:</label>
+        <input type="number" id="heat-n" value="32" />
+        <label>eta_max:</label>
+        <input type="number" id="heat-eta" value="3" step="0.1" />
+        <button id="btn-heat">Solve Heat Equation</button>
+      </div>
+      <div id="heat-out" class="output"></div>
     </section>
   </main>
 
-  <footer class="footer">Local Numerical Methods Solver</footer>
+  <footer>
+    <small>Local Numerical Methods Toolkit — Flask backend</small>
+  </footer>
 
   <script src="script.js"></script>
 </body>
